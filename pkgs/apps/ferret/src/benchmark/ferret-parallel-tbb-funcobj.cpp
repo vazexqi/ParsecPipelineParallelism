@@ -19,11 +19,9 @@ extern "C" {
 #include "queue.h"
 
 #include "tbb/task_scheduler_init.h"
-#include "tbb/pipeline.h"
+#include "tbb/flow_graph.h"
 
 #include <stack>
-
-#define PIPELINE_WIDTH 1024
 
 struct load_data {
 	int width, height;
@@ -55,7 +53,7 @@ struct rank_data {
 	cass_result_t result;
 };
 
-class Read : public tbb::filter {
+class Read {
 private:
 	struct stack_data {
 		DIR *dir;
@@ -65,13 +63,12 @@ private:
 	std::stack<stack_data*> stack;
 	const char *starting_dir;
 	char path[ BUFSIZ ];
-	int first_call;
+	bool first_call;
 	int *cnt_enqueue;
 public:
 	Read( const char* starting_dir_, int *cnt_enqueue_ ) :
-		filter( tbb::filter::serial ),
 		starting_dir( starting_dir_ ),
-		first_call(1),
+		first_call(true),
 		cnt_enqueue( cnt_enqueue_ )
 	{};
 
@@ -84,24 +81,27 @@ public:
 		}
 	};
 
-	void* operator()( void* ) {
+	bool operator()( load_data*& output ) {
 		if( first_call ) {
 			// special handling at the start
-			first_call = 0;
+			first_call = false;
 			path[0] = 0; // empty the path buffer
 			if( ! strcmp( starting_dir, "." ) ) {
 				// if they used the special directory notation,
 				// make sure to enter the current directory before getting an item
 				enter_directory( ".", path );
-				return read_next_item();
+				output = read_next_item();
+				
 			} else {
 				// otherwise, we can just figure out what to do with the path provided
-				return dispatch( starting_dir, path );
+				output = dispatch( starting_dir, path );
 			}
 		} else {
 			// otherwise, just get the next item
-			return read_next_item();
+			output = read_next_item();
 		}
+
+		return output != NULL ? true : false;
 	};
 private:
 	// find the next item
@@ -198,17 +198,14 @@ private:
 	};
 };
 
-class SegmentImage : public tbb::filter {
+class SegmentImage {
 public:
-	SegmentImage() :
-		filter( tbb::filter::parallel )
-	{};
 
-	void* operator()( void* vitem ) {
+	seg_data* operator()( load_data* vitem ) {
 		struct load_data *load;
 		struct seg_data *seg;
 
-		load	= (load_data*) vitem;
+		load	= vitem;
 		seg	= new seg_data;
 
 		seg->name 	= load->name;
@@ -223,21 +220,18 @@ public:
 		delete load->RGB;
 		delete load;
 
-		return (void*) seg;
+		return seg;
 	};
 };
 
-class ExtractFeatures : public tbb::filter {
+class ExtractFeatures {
 public:
-	ExtractFeatures() :
-		filter( tbb::filter::parallel )
-	{};
 
-	void* operator()( void* vitem ) {
+	extract_data* operator()( seg_data* vitem ) {
 		struct seg_data *seg;
 		struct extract_data *extract;
 
-		seg = (seg_data*) vitem;
+		seg = vitem;
 		assert( seg != NULL );
 		extract	= new extract_data;
 		extract->name = seg->name;
@@ -250,18 +244,17 @@ public:
 		delete seg->HSV;
 		delete seg;
 
-		return (void*) extract;
+		return extract;
 	};
 };
 
-class QueryIndex : public tbb::filter {
+class QueryIndex {
 private:
 	int *vec_dist_id, *vecset_dist_id, *top_K;
 	cass_table_t *table;
 	char *extra_params;
 public:
 	QueryIndex( int *vec_dist_id_, int *vecset_dist_id_, int *top_K_, cass_table_t *table_, char *extra_params_ ) :
-		filter( tbb::filter::parallel ),
 		vec_dist_id( vec_dist_id_ ),
 		vecset_dist_id( vecset_dist_id_ ),
 		top_K( top_K_ ),
@@ -269,12 +262,12 @@ public:
 		extra_params( extra_params_ )
 	{};
 
-	void* operator()( void* vitem ) {
+	vec_query_data* operator()( extract_data* vitem ) {
 		struct extract_data *extract;
 		struct vec_query_data *vec;
 		cass_query_t query;
 
-		extract		= (extract_data*) vitem;
+		extract		= vitem;
 		assert( extract != NULL );
 		vec 		= new vec_query_data;
 		vec->name 	= extract->name;
@@ -294,30 +287,29 @@ public:
 
 	//	delete extract; 
 
-		return (void*) vec;
+		return vec;
 	};
 };
 
-class RankCandidates : public tbb::filter {
+class RankCandidates {
 private:
 	int *vec_dist_id, *vecset_dist_id, *top_K;
 	cass_table_t* query_table;
 public:
 	RankCandidates( int *vec_dist_id_, int *vecset_dist_id_, int *top_K_, cass_table_t *query_table_ ) :
-		filter( tbb::filter::parallel ),
 		vec_dist_id( vec_dist_id_ ),
 		vecset_dist_id( vecset_dist_id_),
 		top_K( top_K_ ),
 		query_table( query_table_ )
 	{};
 
-	void* operator()( void* vitem ) {
+	rank_data* operator()( vec_query_data* vitem ) {
 		struct vec_query_data *vec;
 		struct rank_data *rank;
 		cass_result_t *candidate;
 		cass_query_t query;
 
-		vec 		= (vec_query_data*) vitem;
+		vec 		= vitem;
 		assert( vec != NULL );
 		rank 		= new rank_data;
 		rank->name 	= vec->name;
@@ -343,28 +335,27 @@ public:
 		free( vec->ds );
 		delete vec;
 
-		return (void*) rank;
+		return rank;
 	};
 };
 
-class Write : public tbb::filter {
+class Write {
 private:
 	FILE *fout;
 	cass_table_t *query_table;
 	int *cnt_enqueue, *cnt_dequeue;
 public:
 	Write( FILE *fout_, cass_table_t *query_table_, int *cnt_enqueue_, int *cnt_dequeue_ ) :
-		filter( tbb::filter::serial ),
 		fout( fout_ ),
 		query_table( query_table_ ),
 		cnt_enqueue( cnt_enqueue_ ),
 		cnt_dequeue( cnt_dequeue_ )
 	{};
 
-	void* operator()( void* vitem ) {
+	void operator()( rank_data* vitem ) {
 		struct rank_data *rank;
 
-		rank = (rank_data*) vitem;
+		rank = vitem;
 		assert( rank != NULL );
 
 		fprintf( fout, "%s", rank->name ); // pass in
@@ -469,30 +460,52 @@ int main( int argc, char *argv[] ) {
 	image_init( argv[0] );
 
 	stimer_tick( &tmr );
+    
+    /////////////////////////////////////////////
+    // Create pipeline stages as tbb::flow graph
+    /////////////////////////////////////////////
+	tbb::flow::graph cbir;
 
-// Create pipeline stages
-	Read 		reader( query_dir, &cnt_enqueue );
-	SegmentImage 	seg;
-	ExtractFeatures	ext;
-	QueryIndex	query( &vec_dist_id, &vecset_dist_id, &top_K, table, extra_params );
-	RankCandidates	rank( &vec_dist_id, &vecset_dist_id, &top_K, query_table );
-	Write		write( fout, query_table, &cnt_enqueue, &cnt_dequeue );
-	tbb::pipeline 	pipe;
+	tbb::flow::source_node<load_data*> input(cbir, Read( query_dir, &cnt_enqueue ) );
+	tbb::flow::function_node<load_data*, seg_data*> segmenter( cbir, tbb::flow::unlimited, SegmentImage() );
+	tbb::flow::function_node<seg_data*, extract_data*> extracter( cbir, tbb::flow::unlimited, ExtractFeatures() );
+	tbb::flow::function_node<extract_data*, vec_query_data*> querier( cbir, tbb::flow::unlimited, QueryIndex( &vec_dist_id, &vecset_dist_id, &top_K, table, extra_params ) );
+	tbb::flow::function_node<vec_query_data*, rank_data*> ranker( cbir, tbb::flow::unlimited, RankCandidates( &vec_dist_id, &vecset_dist_id, &top_K, query_table ) );
+	tbb::flow::function_node<rank_data*> writer( cbir, tbb::flow::unlimited, Write( fout, query_table, &cnt_enqueue, &cnt_dequeue ) );
 
-	pipe.add_filter( reader );
-	pipe.add_filter( seg );
-	pipe.add_filter( ext );
-	pipe.add_filter( query );
-	pipe.add_filter( rank );
-	pipe.add_filter( write );
+	// Read 		reader( query_dir, &cnt_enqueue );
+	// SegmentImage 	seg;
+	// ExtractFeatures	ext;
+	// QueryIndex	query( &vec_dist_id, &vecset_dist_id, &top_K, table, extra_params );
+	// RankCandidates	rank( &vec_dist_id, &vecset_dist_id, &top_K, query_table );
+	// Write		write( fout, query_table, &cnt_enqueue, &cnt_dequeue );
 
-// Run pipeline
-	pipe.run( PIPELINE_WIDTH );
-//	pipe.run( num_tokens );
+    ///////////////////
+    // Chain up stages 
+    ///////////////////
 
-// Clean up 
+    tbb::flow::make_edge(input, segmenter);
+    tbb::flow::make_edge(segmenter, extracter);
+    tbb::flow::make_edge(extracter, querier);
+    tbb::flow::make_edge(querier, ranker);
+    tbb::flow::make_edge(ranker, writer);
+
+	// pipe.add_filter( reader );
+	// pipe.add_filter( seg );
+	// pipe.add_filter( ext );
+	// pipe.add_filter( query );
+	// pipe.add_filter( rank );
+	// pipe.add_filter( write );
+
+    ////////////////
+    // Run pipeline
+    ////////////////
+
+    cbir.wait_for_all();
+    // pipe.run(  PIPELINE_WIDTH  );
+
+    // Clean up 
 	assert( cnt_enqueue == cnt_dequeue );
-	pipe.clear();
 
 	stimer_tuck( &tmr, "QUERY TIME" );
 

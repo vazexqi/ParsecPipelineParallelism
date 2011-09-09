@@ -7,3 +7,4 @@ pkgs/*/*/inputs/
 pkgs/*/*/inst/
 pkgs/*/*/obj/
 pkgs/*/*/run/
+pkgs/libs/*

@@ -78,18 +78,11 @@ ifdef version
     benchmark_base := ferret-parallel-tbb-funcobj
     LDLIBS += -lpthread -ltbb
   endif
-  ifeq "$(version)" "tbb_lambda"
-    benchmark_base := ferret-parallel-tbb-lambda
-    LDLIBS += -lpthread -ltbb
-  endif
 endif
 
 benchmark_src := $(benchmark_base).c
 ifdef version
   ifeq "$(version)" "tbb_funcobj"
-    benchmark_src := $(benchmark_base).cpp
-  endif
-  ifeq "$(version)" "tbb_lambda"
     benchmark_src := $(benchmark_base).cpp
   endif
 endif
@@ -98,9 +91,6 @@ benchmark_tgt_ := $(notdir $(benchmark_src))
 benchmark_tgt := $(addprefix $(BINDIR)/, $(benchmark_tgt_:.c=))
 ifdef version
   ifeq "$(version)" "tbb_funcobj"
-    benchmark_tgt := $(addprefix $(BINDIR)/, $(benchmark_tgt_:.cpp=))
-  endif
-  ifeq "$(version)" "tbb_lambda"
     benchmark_tgt := $(addprefix $(BINDIR)/, $(benchmark_tgt_:.cpp=))
   endif
 endif
