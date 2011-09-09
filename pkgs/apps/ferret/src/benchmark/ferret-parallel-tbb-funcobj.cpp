@@ -460,10 +460,10 @@ int main( int argc, char *argv[] ) {
 	image_init( argv[0] );
 
 	stimer_tick( &tmr );
-    
-    /////////////////////////////////////////////
-    // Create pipeline stages as tbb::flow graph
-    /////////////////////////////////////////////
+
+  /////////////////////////////////////////////
+  // Create pipeline stages as tbb::flow graph
+  /////////////////////////////////////////////
 	tbb::flow::graph cbir;
 
 	tbb::flow::source_node<load_data*> input(cbir, Read( query_dir, &cnt_enqueue ) );
@@ -471,7 +471,7 @@ int main( int argc, char *argv[] ) {
 	tbb::flow::function_node<seg_data*, extract_data*> extracter( cbir, tbb::flow::unlimited, ExtractFeatures() );
 	tbb::flow::function_node<extract_data*, vec_query_data*> querier( cbir, tbb::flow::unlimited, QueryIndex( &vec_dist_id, &vecset_dist_id, &top_K, table, extra_params ) );
 	tbb::flow::function_node<vec_query_data*, rank_data*> ranker( cbir, tbb::flow::unlimited, RankCandidates( &vec_dist_id, &vecset_dist_id, &top_K, query_table ) );
-	tbb::flow::function_node<rank_data*> writer( cbir, tbb::flow::unlimited, Write( fout, query_table, &cnt_enqueue, &cnt_dequeue ) );
+	tbb::flow::function_node<rank_data*> writer( cbir, 1, Write( fout, query_table, &cnt_enqueue, &cnt_dequeue ) );
 
 	// Read 		reader( query_dir, &cnt_enqueue );
 	// SegmentImage 	seg;
@@ -480,15 +480,15 @@ int main( int argc, char *argv[] ) {
 	// RankCandidates	rank( &vec_dist_id, &vecset_dist_id, &top_K, query_table );
 	// Write		write( fout, query_table, &cnt_enqueue, &cnt_dequeue );
 
-    ///////////////////
-    // Chain up stages 
-    ///////////////////
+  ///////////////////
+  // Chain up stages 
+  ///////////////////
 
-    tbb::flow::make_edge(input, segmenter);
-    tbb::flow::make_edge(segmenter, extracter);
-    tbb::flow::make_edge(extracter, querier);
-    tbb::flow::make_edge(querier, ranker);
-    tbb::flow::make_edge(ranker, writer);
+  tbb::flow::make_edge(input, segmenter);
+  tbb::flow::make_edge(segmenter, extracter);
+  tbb::flow::make_edge(extracter, querier);
+  tbb::flow::make_edge(querier, ranker);
+  tbb::flow::make_edge(ranker, writer);
 
 	// pipe.add_filter( reader );
 	// pipe.add_filter( seg );
@@ -497,14 +497,14 @@ int main( int argc, char *argv[] ) {
 	// pipe.add_filter( rank );
 	// pipe.add_filter( write );
 
-    ////////////////
-    // Run pipeline
-    ////////////////
+  ////////////////
+  // Run pipeline
+  ////////////////
 
-    cbir.wait_for_all();
-    // pipe.run(  PIPELINE_WIDTH  );
+  cbir.wait_for_all();
+  // pipe.run(  PIPELINE_WIDTH  );
 
-    // Clean up 
+  // Clean up 
 	assert( cnt_enqueue == cnt_dequeue );
 
 	stimer_tuck( &tmr, "QUERY TIME" );
