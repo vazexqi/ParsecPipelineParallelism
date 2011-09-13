@@ -344,12 +344,14 @@ private:
 	FILE *fout;
 	cass_table_t *query_table;
 	int *cnt_enqueue, *cnt_dequeue;
+  tbb::flow::limiter_node<load_data*> &limiter;
 public:
-	Write( FILE *fout_, cass_table_t *query_table_, int *cnt_enqueue_, int *cnt_dequeue_ ) :
+	Write( FILE *fout_, cass_table_t *query_table_, int *cnt_enqueue_, int *cnt_dequeue_, tbb::flow::limiter_node<load_data*> &limiter_ ) :
 		fout( fout_ ),
 		query_table( query_table_ ),
 		cnt_enqueue( cnt_enqueue_ ),
-		cnt_dequeue( cnt_dequeue_ )
+		cnt_dequeue( cnt_dequeue_ ),
+    limiter(limiter_)
 	{};
 
 	void operator()( rank_data* vitem ) {
@@ -378,6 +380,8 @@ public:
 		// add the count printer
 		(*cnt_dequeue)++;
 		fprintf( stderr, "(%d,%d)\n", *cnt_enqueue, *cnt_dequeue );
+
+    limiter.decrement.try_put( tbb::flow::continue_msg() );
 
 		return NULL;
 	};
@@ -464,14 +468,18 @@ int main( int argc, char *argv[] ) {
   /////////////////////////////////////////////
   // Create pipeline stages as tbb::flow graph
   /////////////////////////////////////////////
-	tbb::flow::graph cbir;
+	
+#define PIPELINE_WIDTH 64
+  
+  tbb::flow::graph cbir;
 
 	tbb::flow::source_node<load_data*> input(cbir, Read( query_dir, &cnt_enqueue ) );
+  tbb::flow::limiter_node<load_data*> limiter(cbir, PIPELINE_WIDTH );
 	tbb::flow::function_node<load_data*, seg_data*> segmenter( cbir, tbb::flow::unlimited, SegmentImage() );
 	tbb::flow::function_node<seg_data*, extract_data*> extracter( cbir, tbb::flow::unlimited, ExtractFeatures() );
 	tbb::flow::function_node<extract_data*, vec_query_data*> querier( cbir, tbb::flow::unlimited, QueryIndex( &vec_dist_id, &vecset_dist_id, &top_K, table, extra_params ) );
 	tbb::flow::function_node<vec_query_data*, rank_data*> ranker( cbir, tbb::flow::unlimited, RankCandidates( &vec_dist_id, &vecset_dist_id, &top_K, query_table ) );
-	tbb::flow::function_node<rank_data*> writer( cbir, 1, Write( fout, query_table, &cnt_enqueue, &cnt_dequeue ) );
+	tbb::flow::function_node<rank_data*> writer( cbir, tbb::flow::serial, Write( fout, query_table, &cnt_enqueue, &cnt_dequeue, limiter ) );
 
 	// Read 		reader( query_dir, &cnt_enqueue );
 	// SegmentImage 	seg;
@@ -484,7 +492,8 @@ int main( int argc, char *argv[] ) {
   // Chain up stages 
   ///////////////////
 
-  tbb::flow::make_edge(input, segmenter);
+  tbb::flow::make_edge(input, limiter);
+  tbb::flow::make_edge(limiter, segmenter);
   tbb::flow::make_edge(segmenter, extracter);
   tbb::flow::make_edge(extracter, querier);
   tbb::flow::make_edge(querier, ranker);
